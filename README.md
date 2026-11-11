@@ -10,7 +10,8 @@ A browser game for learning perfect blackjack basic strategy before a Las Vegas 
   - *Free drill*: rapid-fire hands by category or from your weak spots. Hands you miss come back more often.
   - *Exam*: 50 hands with no feedback until the end, optionally at 6 seconds a hand. 48 is a pass.
 - **Chart**: the strategy chart for your table's rules, with the reasoning behind each cell and an overlay of your own accuracy.
-- **Count**: Hi-Lo running count drill, true count conversion, bet sizing, and the plays that change with the count.
+- **Count**: a seven-stage Hi-Lo course. Each stage explains one idea and then drills it: card values, cancelling pairs, running count, counting a full table, true count, betting, and count-based deviations.
+  - In **Play**, count practice is optional: show the count as a guide, or hide it and have your count checked on request and after some rounds. Bets and plays can also be checked against the count.
 - **Learn**: lessons on how basic strategy works, choosing a table (3:2 vs 6:5), hand signals and etiquette, bets to skip, bankroll, comps, counting, and the odds of craps, video poker, baccarat and roulette.
 - **Stats**: a readiness checklist, accuracy by day, streaks, the cost of your mistakes, and your weakest hands.
 

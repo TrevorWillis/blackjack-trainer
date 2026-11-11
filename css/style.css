@@ -332,3 +332,31 @@ h3 small { font-family: system-ui, sans-serif; font-size: .75rem; margin-left: 6
 .day .col { flex: 1; width: 100%; max-width: 22px; display: flex; align-items: flex-end; background: var(--panel2); border-radius: 4px; overflow: hidden; }
 .day .col i { display: block; width: 100%; background: var(--gold); border-radius: 4px 4px 0 0; }
 .day .l { font-size: .65rem; color: var(--muted); }
+
+/* Count course */
+.stepper { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
+.stepper span { flex-basis: 100%; text-align: center; font-family: Georgia, serif; font-size: 1.05rem; }
+.stepper b { min-width: 64px; text-align: center; font: 700 1.7rem Georgia, serif; font-variant-numeric: tabular-nums; }
+.stepper .btn { min-width: 58px; font-size: 1.3rem; padding: 10px; }
+.stepper .btn.primary { font-size: 1rem; padding: 14px 18px; margin-left: 6px; }
+.actions.choices { grid-template-columns: repeat(auto-fit, minmax(52px, 1fr)) !important; }
+.actions.choices .btn { grid-column: auto !important; font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+.bigq { display: flex; justify-content: center; gap: 12px; margin: 6px 0 12px; }
+.bigq div { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 22px; text-align: center; min-width: 130px; }
+.bigq label { display: block; font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.bigq b { font: 700 2.2rem Georgia, serif; }
+.tcbadge { align-self: center; background: var(--gold); color: #2a2104; border-radius: 999px; padding: 3px 14px; font-weight: 700; font-size: .9rem; }
+.tableview { min-height: 0; gap: 6px; }
+.tableview .card { width: 46px; height: 64px; padding: 4px 5px; }
+.tableview .card .r { font-size: 1.05rem; }
+.tableview .card .s { font-size: .85rem; }
+.tableview .cards { min-height: 66px; }
+.tableview .cards .card + .card { margin-left: -24px !important; }
+.tableview .hands { flex-wrap: nowrap; gap: 4px; }
+.tableview .hand { padding: 4px; min-width: 0; }
+details.concept, details.reftable { margin: 0 0 10px; }
+details.reftable { margin-top: 14px; }
+details.concept summary, details.reftable summary { padding: 10px 14px; font-size: 1rem; }
+.pills.tight { margin: 0; flex-wrap: nowrap; }
+.countview .field { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 8px 12px; }
+div.stat.count { border-color: var(--gold); }

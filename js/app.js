@@ -9,13 +9,15 @@ import { LESSONS } from './lessons.js';
 
 const KEY = 'bj-trainer-v1';
 const freshExam = () => ({ best: 0, last: 0, taken: 0 });
+const freshCount = () => ({ stages: {}, checks: [0, 0], bets: [0, 0] });
 const freshStats = () => ({ days: {}, cells: {}, hands: 0, decisions: 0, correct: 0, evLost: 0, net: 0, streak: 0, best: 0, rebuys: 0 });
 const state = {
   rules: { ...DEFAULT_RULES },
-  opts: { block: true, countMode: 'off', deviations: false },
+  opts: { block: true, countMode: 'off', deviations: false, betCheck: false, unit: 25 },
   stats: freshStats(),
   path: {},
   exam: freshExam(),
+  count: freshCount(),
   bankroll: 1000,
   bet: 25,
   view: 'play',
@@ -28,6 +30,7 @@ try {
     Object.assign(state.stats, saved.stats);
     Object.assign(state.path, saved.path);
     Object.assign(state.exam, saved.exam);
+    Object.assign(state.count, saved.count);
     for (const k of ['bankroll', 'bet', 'view', 'lastBackup', 'lastBackupN']) if (saved[k] != null) state[k] = saved[k];
   }
 } catch { /* storage unavailable: run without persistence */ }
@@ -37,14 +40,15 @@ function applySaved(saved) {
   state.stats = Object.assign(freshStats(), saved.stats);
   state.path = { ...saved.path };
   state.exam = Object.assign(freshExam(), saved.exam);
+  state.count = Object.assign(freshCount(), saved.count);
   for (const k of ['bankroll', 'bet']) if (saved[k] != null) state[k] = saved[k];
 }
 
 const b64 = u8 => btoa(Array.from(u8, c => String.fromCharCode(c)).join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64 = str => Uint8Array.from(atob(str.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 async function pack() {
-  const { rules, opts, stats, path, exam, bankroll, bet } = state;
-  const raw = new TextEncoder().encode(JSON.stringify({ v: 1, rules, opts, stats, path, exam, bankroll, bet }));
+  const { rules, opts, stats, path, exam, count, bankroll, bet } = state;
+  const raw = new TextEncoder().encode(JSON.stringify({ v: 1, rules, opts, stats, path, exam, count, bankroll, bet }));
   try {
     const z = new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'));
     return 'z' + b64(new Uint8Array(await new Response(z).arrayBuffer()));
@@ -70,7 +74,7 @@ const $ = s => document.querySelector(s);
 const main = $('#main');
 const UPS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const upLabel = u => (u === 11 ? 'A' : String(u));
-const money = n => (n < 0 ? '−' : '') + '$' + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+const money = n => (n < 0 ? '−' : '') + '$' + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: Number.isInteger(n) ? 0 : 2, maximumFractionDigits: 2 });
 const signed = n => (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n);
 const pct = (a, b) => (b ? Math.round((100 * a) / b) + '%' : '–');
 const pick = arr => arr[Math.floor(Math.random() * arr.length)];
@@ -78,8 +82,8 @@ const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 let game = new Game(state.rules);
 let coach = null;        // { kind: 'ok' | 'bad' | 'info', html }
 let tried = false;       // current decision already answered wrongly (block mode)
-let countQuiz = null;    // { answer, result }
-let peekCount = false;
+let countQuiz = null;    // { entry, result }
+let animateDone = false; // fade results in once, on the render that ends a round
 
 /* ---------- Shared rendering ---------- */
 
@@ -139,6 +143,11 @@ function record(cell, right, cost = 0) {
   save();
 }
 
+const stepperHTML = (label, value, pfx) => `<div class="stepper"><span>${label}</span>
+  <button class="btn" data-act="${pfx}step" data-v="-1" aria-label="Lower">−</button><b>${signed(value)}</b>
+  <button class="btn" data-act="${pfx}step" data-v="1" aria-label="Higher">+</button>
+  <button class="btn primary" data-act="${pfx}submit">Check</button></div>`;
+
 const actionButtons = (avail, prefix) => ['H', 'S', 'D', 'P', 'R'].map(a => {
   if (a === 'R' && !state.rules.surrender) return '';
   return `<button class="btn act a-${a}" data-act="${prefix}" data-a="${a}" ${avail[a] ? '' : 'disabled'}>${ACTION_NAMES[a]}<kbd>${a}</kbd></button>`;
@@ -161,14 +170,27 @@ function playAvail() {
 function countHTML() {
   const mode = state.opts.countMode;
   if (mode === 'off') return '';
-  const show = mode === 'show' || peekCount;
-  const tc = game.trueCount;
-  return `<button class="stat count" data-act="peek"><label>Hi-Lo count</label>
-    <b>${show ? `${signed(game.running)} <small>true ${signed(Math.abs(tc) < 0.05 ? 0 : +tc.toFixed(1))}</small>` : 'Tap to peek'}</b></button>`;
+  if (mode === 'show') {
+    const tc = game.trueCount;
+    return `<div class="stat count"><label>Hi-Lo count</label><b>${signed(game.running)} <small>true ${signed(Math.abs(tc) < 0.05 ? 0 : +tc.toFixed(1))}</small></b></div>`;
+  }
+  const ch = state.count.checks, n = ch[0] + ch[1];
+  return `<button class="stat count" data-act="peek"><label>Check my count</label><b>${n ? `${ch[0]}/${n} <small>right</small>` : 'Tap here'}</b></button>`;
+}
+
+function countCheck() {
+  const q = countQuiz;
+  if (!q || q.result) return;
+  const ok = q.entry === game.running;
+  state.count.checks[ok ? 0 : 1]++;
+  q.result = { ok, given: q.entry, rc: game.running, decks: game.decksLeft, tc: flooredTC() };
+  save();
+  renderPlay();
 }
 
 function renderPlay() {
   dealIdx = 0;
+  const fadeCls = animateDone ? ' fade' : '';
   const g = game, r = state.rules;
   const inRound = g.phase !== 'bet';
   const dealerShown = inRound && !g.dealer[1].hidden;
@@ -176,7 +198,7 @@ function renderPlay() {
   const handsHTML = inRound ? g.hands.map((h, i) => {
     const cards = h.cards.map(cardHTML).join('');
     const active = g.phase === 'player' && i === g.cur;
-    const res = h.result ? `<span class="result r-${h.result.toLowerCase()} fade" style="animation-delay:${dealIdx * 130}ms">${h.result}${h.net ? ' ' + money(h.net).replace('$', h.net > 0 ? '+$' : '$') : ''}</span>` : '';
+    const res = h.result ? `<span class="result r-${h.result.toLowerCase()}${fadeCls}" style="animation-delay:${dealIdx * 130}ms">${h.result}${h.net ? ' ' + money(h.net).replace('$', h.net > 0 ? '+$' : '$') : ''}</span>` : '';
     const label = g.hands.length > 1 ? `<div class="hlabel">Hand ${i + 1}${active ? ' · your turn' : ''}</div>` : '';
     return `<div class="hand${active ? ' active' : ''}">
       ${label}<div class="cards">${cards}</div>
@@ -185,7 +207,7 @@ function renderPlay() {
   }).join('') : '<div class="placeholder">Place your bet and deal</div>';
   const delay = `animation-delay:${dealIdx * 130}ms`;
   const dealerTotal = !inRound ? '' : dealerShown
-    ? `<span class="total fade" style="${delay}">${totalLabel(g.dealer)}</span>`
+    ? `<span class="total${fadeCls}" style="${delay}">${totalLabel(g.dealer)}</span>`
     : `<span class="total">${upLabel(g.upValue)}</span>`;
 
   let controls;
@@ -198,8 +220,8 @@ function renderPlay() {
     controls = `<div class="prompt">You are out of chips.</div><div class="actions two"><button class="btn primary" data-act="rebuy">Rebuy $1,000</button></div>`;
   } else {
     const tc = flooredTC();
-    const advice = state.opts.countMode !== 'off' && (state.opts.countMode === 'show' || peekCount)
-      ? `<div class="bet-advice">True count ${signed(tc)}: a counter bets ${betUnits(tc)} unit${betUnits(tc) > 1 ? 's' : ''}</div>` : '';
+    const advice = state.opts.countMode === 'show'
+      ? `<div class="bet-advice">True count ${signed(tc)}: a counter bets ${betUnits(tc)} unit${betUnits(tc) > 1 ? 's' : ''} (${money(betUnits(tc) * state.opts.unit)})</div>` : '';
     controls = `${advice}<div class="betrow">
         <button class="chipbtn c5" data-act="chip" data-v="5">+5</button>
         <button class="chipbtn c25" data-act="chip" data-v="25">+25</button>
@@ -210,10 +232,12 @@ function renderPlay() {
   }
 
   let quiz = '';
-  if (countQuiz && g.phase === 'done') {
-    quiz = countQuiz.result
-      ? `<div class="coach ${countQuiz.result.ok ? 'ok' : 'bad'} fade">${countQuiz.result.ok ? '✓ Count is right:' : '✗ The running count is'} <b>${signed(game.running)}</b></div>`
-      : `<form class="coach info quiz fade" style="${delay}" data-form="countquiz">What is the running count? <input name="rc" type="number" inputmode="numeric" required><button class="btn small">Check</button></form>`;
+  if (countQuiz) {
+    const q = countQuiz.result, late = animateDone && countQuiz.auto;
+    quiz = q
+      ? `<div class="coach ${q.ok ? 'ok' : 'bad'}"><b>${q.ok ? '✓ Your count is right.' : `✗ You said ${signed(q.given)}.`} Running count ${signed(q.rc)}.</b>
+          <div class="why">With ${q.decks.toFixed(1)} decks left the true count is ${signed(q.tc)}, so a counter bets ${betUnits(q.tc)} unit${betUnits(q.tc) > 1 ? 's' : ''}.</div></div>`
+      : `<div class="coach info${late ? ' fade' : ''}" style="${late ? delay : ''}">${stepperHTML('Running count?', countQuiz.entry, 'q')}</div>`;
   }
 
   main.innerHTML = `<section class="play">
@@ -229,9 +253,10 @@ function renderPlay() {
       <div class="hands n${g.hands.length}">${handsHTML}</div>
     </div>
     <div class="controls">${controls}</div>
-    ${coach ? `<div class="coach ${coach.kind}${g.phase === 'done' ? ' fade' : ''}" style="${g.phase === 'done' ? delay : ''}">${coach.html}</div>` : ''}
+    ${coach ? `<div class="coach ${coach.kind}${fadeCls}" style="${animateDone ? delay : ''}">${coach.html}</div>` : ''}
     ${quiz}
   </section>`;
+  animateDone = false;
 }
 
 function roundSummary() {
@@ -244,12 +269,13 @@ function roundSummary() {
 
 function finishIfDone() {
   if (game.phase !== 'done') return;
+  animateDone = true;
   state.bankroll += game.net;
   state.stats.hands += game.hands.length;
   state.stats.net += game.net;
   const body = coach && coach.kind === 'bad' ? coach.html : coach ? coach.html : '';
   coach = { kind: coach ? coach.kind : 'info', html: body + roundSummary() };
-  countQuiz = state.opts.countMode === 'quiz' && Math.random() < 0.4 ? {} : null;
+  if (!countQuiz && state.opts.countMode === 'quiz' && Math.random() < 0.4) countQuiz = { entry: 0, auto: true };
   save();
 }
 
@@ -257,9 +283,18 @@ function deal() {
   if (game.phase !== 'bet' && game.phase !== 'done') return;
   const bet = Math.min(state.bet, state.bankroll);
   if (bet < 5) return;
-  coach = null; tried = false; countQuiz = null; peekCount = false;
+  coach = null; tried = false; countQuiz = null;
+  const tcBet = game.pos >= game.cut ? 0 : flooredTC();
+  const bankBefore = state.bankroll;
   game.startRound(bet);
   if (game.justShuffled) { seen.clear(); coach = { kind: 'info', html: 'New shoe. The count starts again from zero.' }; }
+  if (state.opts.betCheck) {
+    const units = betUnits(tcBet), ideal = Math.min(units * state.opts.unit, Math.floor(bankBefore));
+    const ok = bet === ideal;
+    state.count.bets[ok ? 0 : 1]++;
+    const lead = game.justShuffled ? 'New shoe, so the count is 0.' : `The true count was ${signed(tcBet)}.`;
+    coach = { kind: ok ? 'ok' : 'bad', html: `<b>${ok ? '✓' : '✗'} Bet check.</b> <span class="why">${lead} That calls for ${units} unit${units > 1 ? 's' : ''} (${money(ideal)})${ok ? '.' : `, and you bet ${money(bet)}.`}</span>` };
+  }
   finishIfDone();
   renderPlay();
 }
@@ -639,78 +674,288 @@ function renderChart() {
   </section>`;
 }
 
-/* ---------- Count ---------- */
+/* ---------- Count: a staged Hi-Lo course ---------- */
 
-const cnt = { phase: 'idle', n: 30, speed: 1000, cards: [], i: 0, timer: null, result: null, tc: null };
+const CSTAGES = [
+  { id: 'values', title: 'Card values', sub: 'Every card is +1, 0 or −1', w: 20, need: 19,
+    concept: `<p>Counting is not memorising cards. You keep one number that tells you whether the cards still in the shoe are rich in high cards or low cards.</p>
+      <p>High cards help you: more blackjacks paid at 3 to 2, stronger doubles, and a dealer who busts more often. Low cards help the dealer. So each card that leaves the shoe gets a value:</p>
+      <table class="info"><tr><td>2, 3, 4, 5, 6</td><td class="plus"><b>+1</b></td><td>A low card is gone. Good for you.</td></tr>
+      <tr><td>7, 8, 9</td><td><b>0</b></td><td>Neutral. Ignore it.</td></tr>
+      <tr><td>10, J, Q, K, A</td><td class="minus"><b>−1</b></td><td>A high card is gone. Bad for you.</td></tr></table>
+      <p>This is the Hi-Lo system. Drill until the value comes to you without thinking.</p>` },
+  { id: 'pairs', title: 'Cancelling pairs', sub: 'Read two cards as one number', w: 20, need: 19,
+    concept: `<p>At a table the cards arrive in twos, too quickly to add one at a time. Learn to see a pair as a single value.</p>
+      <ul><li>A high card and a low card cancel: <b>King + 5 = 0</b>. Skip them.</li>
+      <li>Two low cards are <b>+2</b>, two high cards are <b>−2</b>.</li>
+      <li>A 7, 8 or 9 adds nothing, so the pair is worth whatever the other card is.</li></ul>
+      <p>Most hands at a real table cancel to zero or one. That is what makes counting possible at speed.</p>` },
+  { id: 'running', title: 'Running count', sub: 'Keep the total as cards go by', w: 5, need: 4,
+    concept: `<p>Start at <b>0</b> when the shoe is shuffled. Add each card's value as you see it and carry the total from round to round. That total is the <b>running count</b>.</p>
+      <p>Example: 5, K, 3, 6, 9, A, 4 is +1, 0, +1, +2, +2, +1, <b>+2</b>.</p>
+      <p>A positive count means more low cards have gone, so the remaining shoe is rich in tens and aces. A negative count means the opposite.</p>
+      <p>Start slow and raise the speed only when you are getting it right. To pass a full deck at "Casino speed" is a good target: a whole deck always ends on 0.</p>` },
+  { id: 'table', title: 'Counting a table', sub: 'Whole rounds, like the real thing', w: 10, need: 9,
+    concept: `<p>In a real game you do not see cards one by one. You see a table full of hands. Counting it is a routine:</p>
+      <ol><li>As the first two cards land, count each player's hand as a pair.</li>
+      <li>Add the dealer's upcard.</li>
+      <li>Add each hit card as it is dealt.</li>
+      <li>Add the dealer's hole card and draws when they turn over.</li></ol>
+      <p>Here each screen is one finished round at a table with three players. Carry your count forward from round to round, and enter the running count after each one.</p>` },
+  { id: 'true', title: 'True count', sub: 'Adjust for the cards left', w: 10, need: 9,
+    concept: `<p>A running count of +6 means much more with one deck left than with five. Six extra high cards in 52 is a rich deck; six in 260 is barely noticeable.</p>
+      <p class="formula">true count = running count ÷ decks left</p>
+      <ul><li>Running +6 with 3 decks left: true <b>+2</b>.</li>
+      <li>Running +6 with 1 deck left: true <b>+6</b>.</li>
+      <li>Running +3 with half a deck left: true <b>+6</b> (dividing by a half doubles it).</li>
+      <li>Running −4 with 2 decks left: true <b>−2</b>.</li></ul>
+      <p>Round <b>down</b> to the whole number below: +7 ÷ 2 = 3.5 is a true count of +3, and −3 ÷ 2 = −1.5 is −2. At the table you estimate decks left by looking at the discard tray: a six-deck shoe with two decks in the tray has four left.</p>` },
+  { id: 'bet', title: 'Betting with the count', sub: 'Where the money is made', w: 10, need: 9,
+    concept: `<p>The count's main use is to tell you how much to bet. Each point of true count is worth about half a percent to you. The house starts about half a percent ahead, so you draw level around +1 and have the edge from +2 up.</p>
+      <table class="info"><tr><th>True count</th><th>Bet</th><th>Your edge, roughly</th></tr>
+      <tr><td>+1 or less</td><td>1 unit</td><td>House has the edge</td></tr>
+      <tr><td>+2</td><td>2 units</td><td>+0.5%</td></tr><tr><td>+3</td><td>4 units</td><td>+1%</td></tr>
+      <tr><td>+4</td><td>6 units</td><td>+1.5%</td></tr><tr><td>+5 or more</td><td>8 units</td><td>+2% and up</td></tr></table>
+      <p>A unit is your minimum bet. This 1 to 8 spread is what turns a small edge into a profit: you bet little when the house is ahead and a lot when you are. Betting more at a negative count, or failing to raise at a high one, gives the edge back.</p>` },
+  { id: 'dev', title: 'Playing deviations', sub: 'When the count changes the play', w: 20, need: 18,
+    concept: `<p>Basic strategy assumes an average shoe. When the count says the shoe is not average, a few plays change. Each has an <b>index</b>: at that true count or higher you make the deviation.</p>
+      <ul><li><b>Insurance</b> at +3 or higher. The most valuable one.</li>
+      <li><b>16 against 10</b>: stand at 0 or higher (if you cannot surrender).</li>
+      <li><b>15 against 10</b>: stand at +4 or higher.</li>
+      <li><b>12 against 3</b>: stand at +2. <b>12 against 2</b>: stand at +3.</li>
+      <li><b>10 against 10 or Ace</b>: double at +4.</li>
+      <li><b>12 against 4</b>: hit when the count is below 0.</li></ul>
+      <p>The logic is always the same. A high count means more tens: stiff hands bust more often if you hit, doubles land more often, and the dealer's ten in the hole is more likely. A low count means the reverse. The full list is at the bottom of this stage.</p>` },
+];
 
-function newTcQuiz() {
-  const decks = pick([1, 1.5, 2, 2.5, 3, 4, 5]);
-  const rc = Math.floor(Math.random() * 25) - 8;
-  cnt.tc = { decks, rc, result: null };
+const cc = { stage: null, q: null, ans: null, entry: 0, rc: 0, round: 0, flash: { phase: 'idle', n: 20, speed: 1000, cards: [], i: 0, timer: null } };
+const anyVal = () => pick([2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 11]);
+const cardsCount = cards => cards.reduce((s, c) => s + hiLo(cardValue(c.r)), 0);
+
+function cProgress(id) {
+  const st = CSTAGES.find(s => s.id === id), r = state.count.stages[id] || [];
+  const n = r.reduce((a, b) => a + b, 0);
+  return { n, len: r.length, done: r.length >= st.w && n >= st.need };
+}
+
+function cStop() {
+  clearInterval(cc.flash.timer);
+  if (cc.flash.phase === 'running') cc.flash.phase = 'idle';
+}
+
+function twoCardVals(t) {
+  const opts = [];
+  for (let a = Math.max(2, t - 10); a <= Math.min(10, t - 2); a++) if (a !== t - a) opts.push(a);
+  const a = pick(opts);
+  return [a, t - a];
+}
+
+function cNewQuestion() {
+  cc.ans = null;
+  const id = cc.stage;
+  if (id === 'values') cc.q = { cards: [mkCard(anyVal())] };
+  else if (id === 'pairs') cc.q = { cards: [mkCard(anyVal()), mkCard(anyVal())] };
+  else if (id === 'running') { cc.q = null; cc.flash.phase = 'idle'; }
+  else if (id === 'table') {
+    const hand = limit => { const cs = [mkCard(anyVal()), mkCard(anyVal())]; while (handInfo(values(cs)).total < limit && cs.length < 5) cs.push(mkCard(anyVal())); return cs; };
+    const q = { dealer: hand(17), hands: [0, 1, 2].map(() => hand(pick([12, 13, 15, 17]))), prev: cc.rc };
+    q.answer = cc.rc + cardsCount([...q.dealer, ...q.hands.flat()]);
+    cc.round++;
+    cc.entry = cc.rc;
+    cc.q = q;
+  } else if (id === 'true') {
+    const decks = pick([0.5, 1, 1.5, 2, 3, 4, 5]);
+    const rc = Math.round((Math.random() * 8 - 2) * decks) + (Math.random() < 0.5 ? 1 : 0);
+    const answer = Math.floor(rc / decks);
+    const opts = new Set([answer]);
+    for (const d of [1, -1, 2, -2, 3]) { if (opts.size < 4) opts.add(answer + d); }
+    cc.q = { decks, rc, answer, exact: rc / decks, opts: [...opts].sort((a, b) => a - b) };
+  } else if (id === 'bet') {
+    const tc = Math.floor(Math.random() * 10) - 2;
+    cc.q = { tc, answer: betUnits(tc) };
+  } else if (id === 'dev') {
+    const r = state.rules;
+    const d = pick(DEVIATIONS.filter(x => !(x.s17only && r.h17) && !(x.surr && !r.surrender) && !(x.noSurr && r.surrender)));
+    const tc = d.idx + pick([-2, -1, 0, 1]);
+    const vals = d.pair ? [10, 10] : twoCardVals(d.t);
+    const cards = vals.map(mkCard);
+    if (d.pair) cards[1].r = cards[0].r;
+    const avail = { H: true, S: true, D: true, P: !!d.pair, R: r.surrender };
+    cc.q = { d, tc, cards, up: mkCard(d.up), avail, adv: advise(vals, d.up, r, avail, tc) };
+  }
+}
+
+function cAnswer(v) {
+  if (!cc.q || cc.ans) return;
+  const q = cc.q, id = cc.stage;
+  let ok, html;
+  if (id === 'values' || id === 'pairs') {
+    const answer = cardsCount(q.cards);
+    ok = v === answer;
+    const parts = q.cards.map(c => `${c.r} is ${signed(hiLo(cardValue(c.r)))}`).join(', ');
+    html = `<b>${ok ? '✓' : '✗'} ${signed(answer)}.</b> <span class="why">${parts}${q.cards.length > 1 ? `, so the pair is ${signed(answer)}` : ''}.</span>`;
+  } else if (id === 'table') {
+    ok = v === q.answer;
+    const rows = [['Dealer', q.dealer], ...q.hands.map((h, i) => [`Player ${i + 1}`, h])]
+      .map(([n, cs]) => `${n} ${signed(cardsCount(cs))}`).join(' · ');
+    html = `<b>${ok ? '✓' : `✗ You said ${signed(v)}.`} The running count is ${signed(q.answer)}.</b>
+      <div class="why">Started at ${signed(q.prev)}. This round: ${rows}.</div>${ok ? '' : '<div class="ev">Carry on from the correct count.</div>'}`;
+    cc.rc = q.answer;
+  } else if (id === 'true') {
+    ok = v === q.answer;
+    html = `<b>${ok ? '✓' : '✗'} True count ${signed(q.answer)}.</b> <span class="why">${signed(q.rc)} ÷ ${q.decks} = ${signed(+q.exact.toFixed(1))}${Number.isInteger(q.exact) ? '' : `, rounded down to ${signed(q.answer)}`}.</span>`;
+  } else if (id === 'bet') {
+    ok = v === q.answer;
+    html = `<b>${ok ? '✓' : '✗'} ${q.answer} unit${q.answer > 1 ? 's' : ''} at a true count of ${signed(q.tc)}.</b> <span class="why">${q.tc <= 1 ? 'The house still has the edge at +1 or less, so bet the minimum.' : `You have roughly a ${((q.tc - 1) * 0.5).toFixed(1)}% edge here, so get more money out.`}</span>`;
+  } else if (id === 'dev') {
+    const { d, adv } = q;
+    ok = v === adv.action;
+    const hand = d.pair ? 'a pair of tens' : d.t;
+    html = `<b>${ok ? `✓ ${ACTION_NAMES[v]} is correct.` : `✗ You chose ${ACTION_NAMES[v].toLowerCase()}. The right play is ${ACTION_NAMES[adv.action].toLowerCase()}.`}</b>
+      <div class="why">The index for ${hand} against ${upLabel(d.up)} is ${signed(d.idx)}: ${ACTION_NAMES[d.ge].toLowerCase()} at ${signed(d.idx)} or higher, otherwise ${ACTION_NAMES[d.lt].toLowerCase()}. The true count here is ${signed(q.tc)}.</div>`;
+  }
+  cFinish(ok, html);
+}
+
+function cFinish(ok, html) {
+  const id = cc.stage, st = CSTAGES.find(s => s.id === id);
+  const was = cProgress(id).done;
+  const r = state.count.stages[id] || (state.count.stages[id] = []);
+  r.push(ok ? 1 : 0);
+  if (r.length > st.w) r.shift();
+  if (!was && cProgress(id).done) html += '<div class="retry">Stage mastered. Go back to all stages for the next one.</div>';
+  cc.ans = { kind: ok ? 'ok' : 'bad', html };
+  cc.open = false;
+  save();
+  renderCount();
+}
+
+function cFlashStart() {
+  const f = cc.flash;
+  f.cards = Array.from({ length: f.n }, () => mkCard(anyVal()));
+  if (f.n === 52) {
+    const deck = [];
+    for (const v of [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 11]) for (let i = 0; i < 4; i++) deck.push(v);
+    deck.sort(() => Math.random() - 0.5);
+    f.cards = deck.map(mkCard);
+  }
+  f.i = 0; f.phase = 'running'; cc.ans = null; cc.entry = 0; cc.open = false;
+  renderCount();
+  clearInterval(f.timer);
+  f.timer = setInterval(() => {
+    if (state.view !== 'count') return cStop();
+    f.i++;
+    if (f.i >= f.n) { clearInterval(f.timer); f.phase = 'answer'; }
+    renderCount();
+  }, f.speed);
+}
+
+function cSubmit() {
+  if (cc.stage === 'table') return cAnswer(cc.entry);
+  const f = cc.flash;
+  if (cc.stage !== 'running' || f.phase !== 'answer') return;
+  const answer = cardsCount(f.cards), ok = cc.entry === answer;
+  f.phase = 'idle';
+  const trail = f.cards.map(c => `<span class="${hiLo(cardValue(c.r)) > 0 ? 'plus' : hiLo(cardValue(c.r)) < 0 ? 'minus' : ''}">${c.r}</span>`).join('');
+  cFinish(ok, `<b>${ok ? '✓ Correct.' : `✗ You said ${signed(cc.entry)}.`} The running count was ${signed(answer)}.</b><div class="cards mini">${trail}</div>`);
+}
+
+const stepper = label => stepperHTML(label, cc.entry, 'c');
+const choices = (vals, fmt) => `<div class="actions choices">${vals.map(v => `<button class="btn" data-act="cans" data-v="${v}">${fmt(v)}</button>`).join('')}</div>`;
+const nextBtn = '<div class="actions two"><button class="btn primary" data-act="cnext">Next<kbd>␣</kbd></button></div>';
+
+function cStageBody() {
+  const id = cc.stage, q = cc.q, a = cc.ans;
+  const ansHTML = a ? `<div class="coach ${a.kind}">${a.html}</div>` : '';
+  if (id === 'values' || id === 'pairs') {
+    return `<div class="felt small flash"><div class="cards big">${q.cards.map(cardHTML).join('')}</div></div>
+      <div class="controls">${a ? nextBtn : choices(id === 'values' ? [1, 0, -1] : [2, 1, 0, -1, -2], signed)}</div>${ansHTML}`;
+  }
+  if (id === 'running') {
+    const f = cc.flash;
+    if (f.phase === 'running') {
+      return `<div class="felt small flash"><div class="cards big">${cardHTML(f.cards[f.i])}</div>
+        <div class="felt-rules">Card ${f.i + 1} of ${f.n}</div></div>
+        <div class="actions two"><button class="btn ghost" data-act="cstop">Stop</button></div>`;
+    }
+    if (f.phase === 'answer') return `<div class="controls">${stepper('Running count?')}</div>`;
+    const sp = [[1500, 'Slow'], [1000, 'Medium'], [600, 'Fast'], [350, 'Casino speed']]
+      .map(([v, l]) => `<button class="pill${f.speed === v ? ' on' : ''}" data-act="cspeed" data-v="${v}">${l}</button>`).join('');
+    const ns = [[10, '10 cards'], [20, '20 cards'], [52, 'Full deck']].map(([v, l]) => `<button class="pill${f.n === v ? ' on' : ''}" data-act="cn" data-v="${v}">${l}</button>`).join('');
+    return `${ansHTML}<div class="pills">${sp}</div><div class="pills">${ns}</div>
+      <div class="actions two"><button class="btn primary" data-act="cstart">${a ? 'Go again' : 'Start flashing cards'}</button></div>`;
+  }
+  if (id === 'table') {
+    const row = (name, cs) => `<div class="hand"><div class="hlabel">${name}</div><div class="cards">${cs.map(cardHTML).join('')}</div></div>`;
+    return `<div class="felt small tableview">
+        <div class="dealer">${row('Dealer', q.dealer)}</div>
+        <div class="felt-rules">Round ${cc.round} · count before this round: ${a ? signed(q.prev) : cc.round === 1 ? '0' : 'yours to remember'}</div>
+        <div class="hands n3">${q.hands.map((h, i) => row(`Player ${i + 1}`, h)).join('')}</div>
+      </div>
+      <div class="controls">${a ? nextBtn.replace('Next', 'Next round') : stepper('Running count now?')}</div>${ansHTML}`;
+  }
+  if (id === 'true') {
+    return `<div class="bigq"><div><label>Running count</label><b>${signed(q.rc)}</b></div><div><label>Decks left</label><b>${q.decks === 0.5 ? '½' : q.decks}</b></div></div>
+      <div class="prompt">What is the true count?</div>
+      <div class="controls">${a ? nextBtn : choices(q.opts, signed)}</div>${ansHTML}`;
+  }
+  if (id === 'bet') {
+    return `<div class="bigq"><div><label>True count</label><b>${signed(q.tc)}</b></div></div>
+      <div class="prompt">How many units do you bet?</div>
+      <div class="controls">${a ? nextBtn : choices([1, 2, 4, 6, 8], v => v)}</div>${ansHTML}`;
+  }
+  const devRows = DEVIATIONS.filter(d => !(d.s17only && state.rules.h17)).map(d => {
+    const txt = d.ge === 'R' ? 'Surrender' : `${ACTION_NAMES[d.ge]} (otherwise ${ACTION_NAMES[d.lt].toLowerCase()})`;
+    return `<tr><td>${d.pair ? '10,10' : d.t} vs ${upLabel(d.up)}</td><td>${signed(d.idx)} or higher</td><td>${txt}${d.noSurr ? ' <small>if you cannot surrender</small>' : ''}</td></tr>`;
+  }).join('');
+  return `<div class="felt small">
+      <div class="tcbadge">True count ${signed(q.tc)}</div>
+      <div class="dealer"><div class="who">Dealer shows</div><div class="cards">${cardHTML(q.up)}<div class="card back"></div></div></div>
+      <div class="hands"><div class="hand active"><div class="cards">${q.cards.map(cardHTML).join('')}</div>
+        <div class="meta"><span class="total">${totalLabel(q.cards)}</span></div></div></div>
+    </div>
+    <div class="controls">${a ? nextBtn : `<div class="actions">${actionButtons(q.avail, 'cdev')}</div>`}</div>${ansHTML}
+    <details class="reftable"><summary><span>All deviations</span><small>Reference</small></summary><div class="lesson">
+      <table class="info"><tr><th>Hand</th><th>True count</th><th>Play</th></tr>
+      <tr><td>Insurance</td><td>${signed(INSURANCE_INDEX)} or higher</td><td>Take it</td></tr>${devRows}</table></div></details>`;
 }
 
 function renderCount() {
   dealIdx = 0;
-  if (!cnt.tc) newTcQuiz();
-  let stage;
-  if (cnt.phase === 'running') {
-    stage = `<div class="felt small flash"><div class="cards big">${cardHTML(cnt.cards[cnt.i])}</div>
-      <div class="felt-rules">Card ${cnt.i + 1} of ${cnt.n}</div></div>
-      <div class="actions two"><button class="btn ghost" data-act="cstop">Stop</button></div>`;
-  } else if (cnt.phase === 'answer') {
-    stage = `<form class="coach info quiz" data-form="cdrill">What is the running count? <input name="rc" type="number" inputmode="numeric" required autofocus><button class="btn small">Check</button></form>`;
-  } else {
-    const res = cnt.result ? `<div class="coach ${cnt.result.ok ? 'ok' : 'bad'}">${cnt.result.ok ? '✓ Correct.' : `✗ You said ${signed(cnt.result.given)}.`} The running count was <b>${signed(cnt.result.answer)}</b>.
-      <div class="cards mini">${cnt.cards.map(c => `<span class="${hiLo(cardValue(c.r)) > 0 ? 'plus' : hiLo(cardValue(c.r)) < 0 ? 'minus' : ''}">${c.r}</span>`).join('')}</div></div>` : '';
-    const sp = [[1500, 'Slow'], [1000, 'Medium'], [600, 'Fast'], [350, 'Casino speed']]
-      .map(([v, l]) => `<button class="pill${cnt.speed === v ? ' on' : ''}" data-act="cspeed" data-v="${v}">${l}</button>`).join('');
-    const ns = [15, 30, 52].map(v => `<button class="pill${cnt.n === v ? ' on' : ''}" data-act="cn" data-v="${v}">${v} cards</button>`).join('');
-    stage = `${res}<div class="pills">${sp}</div><div class="pills">${ns}</div>
-      <div class="actions two"><button class="btn primary" data-act="cstart">Start flashing cards</button></div>`;
+  if (!cc.stage) {
+    const firstOpen = CSTAGES.find(s => !cProgress(s.id).done);
+    const rows = CSTAGES.map((s, i) => {
+      const p = cProgress(s.id);
+      return `<button class="stage${p.done ? ' done' : ''}${firstOpen === s ? ' next' : ''}" data-act="cstage" data-v="${s.id}">
+        <span class="num">${p.done ? '✓' : i + 1}</span>
+        <span class="st"><b>${s.title}</b><small>${s.sub}</small><span class="bar"><i style="width:${(100 * p.n) / s.w}%"></i></span></span>
+        <span class="state">${p.done ? 'Mastered' : p.len ? `${p.n}/${s.w}` : 'Start'}</span></button>`;
+    }).join('');
+    const o = state.opts, ch = state.count.checks;
+    main.innerHTML = `<section class="countview">
+      <p class="lead">Card counting with Hi-Lo, one skill at a time. Each stage explains the idea, then drills it. Get basic strategy solid first: counting adds about one percent, and mistakes in basic play cost more than that.</p>
+      <div class="stages">${rows}</div>
+      <h3>Use it at the table</h3>
+      <p class="note">Practise counting during real hands in the Play tab. "Show" displays the count as a guide. "Test me" hides it and checks your count when you ask and after some rounds.${ch[0] + ch[1] ? ` Your count checks so far: <b>${ch[0]} of ${ch[0] + ch[1]}</b> right.` : ''}</p>
+      <div class="field"><span>Count in Play</span><div class="pills tight">${[['off', 'Off'], ['show', 'Show'], ['quiz', 'Test me']]
+        .map(([v, l]) => `<button class="pill${o.countMode === v ? ' on' : ''}" data-act="copt" data-k="countMode" data-v="${v}">${l}</button>`).join('')}</div></div>
+      <div class="field"><span>Check my bets against the count</span><div class="pills tight">${[[0, 'Off'], [1, 'On']]
+        .map(([v, l]) => `<button class="pill${!!o.betCheck === !!v ? ' on' : ''}" data-act="copt" data-k="betCheck" data-v="${v}">${l}</button>`).join('')}</div></div>
+      <div class="field"><span>Correct my plays using count deviations</span><div class="pills tight">${[[0, 'Off'], [1, 'On']]
+        .map(([v, l]) => `<button class="pill${!!o.deviations === !!v ? ' on' : ''}" data-act="copt" data-k="deviations" data-v="${v}">${l}</button>`).join('')}</div></div>
+      <p class="note">Bet checks use a ${money(o.unit)} unit. Change it under Rules.</p>
+    </section>`;
+    return;
   }
-  const t = cnt.tc;
-  const tcq = t.result
-    ? `<div class="coach ${t.result.ok ? 'ok' : 'bad'}">${t.result.ok ? '✓' : '✗'} ${signed(t.rc)} ÷ ${t.decks} = <b>${signed(+(t.rc / t.decks).toFixed(1))}</b>. Round down to ${signed(Math.floor(t.rc / t.decks))} when betting.
-        <button class="btn small" data-act="tcnext">Another</button></div>`
-    : `<form class="coach info quiz" data-form="tcquiz">Running count <b>${signed(t.rc)}</b>, <b>${t.decks}</b> deck${t.decks === 1 ? '' : 's'} left. True count? <input name="tc" type="number" step="any" inputmode="decimal" required><button class="btn small">Check</button></form>`;
-  const devRows = DEVIATIONS.filter(d => !(d.s17only && state.rules.h17)).map(d => {
-    const hand = d.pair ? '10,10' : d.t;
-    const txt = d.ge === 'R' ? 'Surrender' : `${ACTION_NAMES[d.ge]} (otherwise ${ACTION_NAMES[d.lt].toLowerCase()})`;
-    return `<tr><td>${hand} vs ${upLabel(d.up)}</td><td>${signed(d.idx)} or higher</td><td>${txt}${d.noSurr ? ' <small>if you cannot surrender</small>' : ''}</td></tr>`;
-  }).join('');
+  const st = CSTAGES.find(s => s.id === cc.stage), p = cProgress(st.id);
+  if (!cc.q && cc.stage !== 'running') cNewQuestion();
   main.innerHTML = `<section class="countview">
-    <p class="lead">Hi-Lo: 2 to 6 count <b class="plus">+1</b>, 7 to 9 count <b>0</b>, tens and aces count <b class="minus">−1</b>. Keep a running total as cards appear.</p>
-    <h3>Running count drill</h3>
-    ${stage}
-    <h3>True count conversion</h3>
-    <p class="note">True count = running count ÷ decks left in the shoe.</p>
-    ${tcq}
-    <h3>Betting by the count</h3>
-    <table class="info"><tr><th>True count</th><th>Bet</th><th>Your edge, roughly</th></tr>
-      ${[[1, '+1 or less', 'House has the edge'], [2, '+2', '+0.5%'], [3, '+3', '+1%'], [4, '+4', '+1.5%'], [5, '+5 or more', '+2% and up']]
-        .map(([tc, l, e]) => `<tr><td>${l}</td><td>${betUnits(tc)} unit${betUnits(tc) > 1 ? 's' : ''}</td><td>${e}</td></tr>`).join('')}</table>
-    <h3>Plays that change with the count</h3>
-    <table class="info"><tr><th>Hand</th><th>True count</th><th>Play</th></tr>
-      <tr><td>Insurance</td><td>${signed(INSURANCE_INDEX)} or higher</td><td>Take it</td></tr>${devRows}</table>
-    <p class="note">To practise at the table, open <b>Rules</b> and set count mode to "Quiz me", and switch on count deviations when you are ready.</p>
+    <div class="examhead"><h3>${st.title}</h3><button class="pill" data-act="cback">← All stages</button></div>
+    <details class="concept"${cc.open ? ' open' : ''}><summary><span>The idea</span><small>${cc.open ? 'Tap to hide' : 'Tap to review'}</small></summary><div class="lesson">${st.concept}</div></details>
+    <div class="mastery"><span>${p.done ? '✓ Mastered' : `${p.n} of your last ${st.w} right (need ${st.need})`}</span><span class="bar"><i style="width:${(100 * p.n) / st.w}%"></i></span></div>
+    ${cStageBody()}
   </section>`;
-  const input = main.querySelector('form[data-form="cdrill"] input');
-  if (input) input.focus();
 }
-
-function startCount() {
-  cnt.cards = Array.from({ length: cnt.n }, () => ({ ...mkCard(pick([2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 11])) }));
-  cnt.i = 0; cnt.phase = 'running'; cnt.result = null;
-  renderCount();
-  clearInterval(cnt.timer);
-  cnt.timer = setInterval(() => {
-    if (state.view !== 'count') return stopCount();
-    cnt.i++;
-    if (cnt.i >= cnt.n) { clearInterval(cnt.timer); cnt.phase = 'answer'; }
-    renderCount();
-  }, cnt.speed);
-}
-function stopCount() { clearInterval(cnt.timer); if (cnt.phase === 'running') cnt.phase = 'idle'; }
 
 /* ---------- Learn ---------- */
 
@@ -786,6 +1031,14 @@ function renderStats() {
       <div class="stat"><label>Cost of mistakes</label><b>${money(-Math.round(s.evLost * 100) / 100)}</b></div>
     </div>
     <p class="note">Cost of mistakes is the average amount your wrong plays at the table give away, based on your bet at the time. Aim for 100 correct decisions in a row before the trip.</p>
+    ${(() => {
+      const c = state.count, cm = CSTAGES.filter(x => cProgress(x.id).done).length;
+      const any = cm || c.checks[0] + c.checks[1] || c.bets[0] + c.bets[1] || Object.keys(c.stages).length;
+      return any ? `<h3>Card counting</h3><div class="hud wrap">
+        <div class="stat"><label>Course stages</label><b>${cm}/${CSTAGES.length}</b></div>
+        <div class="stat"><label>Count checks</label><b>${c.checks[0]}/${c.checks[0] + c.checks[1]}</b></div>
+        <div class="stat"><label>Bet checks</label><b>${c.bets[0]}/${c.bets[0] + c.bets[1]}</b></div></div>` : '';
+    })()}
     <h3>Hands to work on</h3>
     ${rows ? `<table class="info"><tr><th>Hand</th><th>Right play</th><th>Missed</th></tr>${rows}</table>
       <div class="actions two"><button class="btn primary" data-act="drillweak">Drill my weak spots</button></div>`
@@ -815,9 +1068,11 @@ function renderSettings() {
     <p class="note" id="edgeNote"></p>
     <h2>Coaching</h2>
     <div class="field"><span>On a wrong play</span>${seg('block', [[1, 'Stop me'], [0, 'Tell me, then play it']], o.block ? 1 : 0)}</div>
-    <div class="field"><span>Card count</span>${seg('countMode', [['off', 'Off'], ['show', 'Show'], ['quiz', 'Quiz me']], o.countMode)}</div>
+    <div class="field"><span>Card count</span>${seg('countMode', [['off', 'Off'], ['show', 'Show'], ['quiz', 'Test me']], o.countMode)}</div>
+    <div class="field"><span>Check my bets</span>${seg('betCheck', [[0, 'Off'], [1, 'On']], o.betCheck ? 1 : 0)}</div>
+    <div class="field"><span>Betting unit</span>${seg('unit', [[5, '$5'], [10, '$10'], [25, '$25'], [50, '$50'], [100, '$100']], o.unit)}</div>
     <div class="field"><span>Count deviations</span>${seg('deviations', [[0, 'Off'], [1, 'On']], o.deviations ? 1 : 0)}</div>
-    <p class="note">With deviations on, the right play follows the Hi-Lo true count instead of plain basic strategy.</p>
+    <p class="note">Show displays the count as a guide. Test me hides it and checks your count on request and after some rounds. Bet checks compare each bet with the count's bet ramp. With deviations on, the right play follows the true count instead of plain basic strategy.</p>
     <div class="actions two"><button class="btn primary" value="ok">Done</button></div>
   </form>`;
   const form = $('#settingsForm');
@@ -825,7 +1080,7 @@ function renderSettings() {
     const f = new FormData(form);
     return {
       rules: { ...r, decks: +f.get('decks'), h17: f.get('h17') === '1', bjPayout: +f.get('bj'), das: f.get('das') === '1', surrender: f.get('surrender') === '1' },
-      opts: { block: f.get('block') === '1', countMode: f.get('countMode'), deviations: f.get('deviations') === '1' },
+      opts: { block: f.get('block') === '1', countMode: f.get('countMode'), deviations: f.get('deviations') === '1', betCheck: f.get('betCheck') === '1', unit: +f.get('unit') },
     };
   };
   const note = () => {
@@ -855,7 +1110,7 @@ function render() {
 }
 
 function go(view) {
-  stopCount();
+  cStop();
   if (exam.on) examQuit();
   if (drill.answered) drill.q = null;
   if (view !== 'stats') backupMsg = '';
@@ -878,7 +1133,9 @@ const handlers = {
     save(); renderPlay();
   },
   rebuy: () => { state.bankroll += 1000; state.stats.rebuys++; state.bet = state.bet || 25; save(); renderPlay(); },
-  peek: () => { peekCount = !peekCount; renderPlay(); },
+  peek: () => { countQuiz = countQuiz && !countQuiz.result ? null : { entry: 0 }; renderPlay(); },
+  qstep: el => { countQuiz.entry += +el.dataset.v; renderPlay(); },
+  qsubmit: countCheck,
   drill: el => drillAct(el.dataset.a),
   dnext: () => { nextDrill(); renderDrill(); },
   dfilter: el => { drill.filter = el.dataset.v; nextDrill(); renderDrill(); },
@@ -891,11 +1148,18 @@ const handlers = {
   examtimed: el => { exam.timed = el.dataset.v === '1'; renderDrill(); },
   cacc: el => { chart.acc = el.dataset.v === '1'; renderChart(); },
   cell: el => { chart.sel = el.dataset.id; renderChart(); },
-  cstart: startCount,
-  cstop: () => { stopCount(); renderCount(); },
-  cspeed: el => { cnt.speed = +el.dataset.v; renderCount(); },
-  cn: el => { cnt.n = +el.dataset.v; renderCount(); },
-  tcnext: () => { newTcQuiz(); renderCount(); },
+  cstage: el => { cStop(); cc.stage = el.dataset.v; cc.q = null; cc.ans = null; cc.rc = 0; cc.round = 0; cc.entry = 0; cc.flash.phase = 'idle'; cc.open = cProgress(cc.stage).len === 0; renderCount(); window.scrollTo(0, 0); },
+  cback: () => { cStop(); cc.stage = null; cc.q = null; cc.ans = null; renderCount(); },
+  cans: el => cAnswer(+el.dataset.v),
+  cdev: el => cAnswer(el.dataset.a),
+  cstep: el => { cc.entry += +el.dataset.v; renderCount(); },
+  csubmit: cSubmit,
+  cnext: () => { cNewQuestion(); renderCount(); },
+  cstart: cFlashStart,
+  cstop: () => { cStop(); renderCount(); },
+  cspeed: el => { cc.flash.speed = +el.dataset.v; renderCount(); },
+  cn: el => { cc.flash.n = +el.dataset.v; renderCount(); },
+  copt: el => { const k = el.dataset.k; state.opts[k] = k === 'countMode' ? el.dataset.v : el.dataset.v === '1'; countQuiz = null; save(); renderCount(); },
   drillweak: () => { drill.mode = 'free'; drill.stage = null; drill.filter = 'weak'; drill.q = null; go('drill'); },
   backup: async () => {
     const url = await restoreLink();
@@ -910,7 +1174,7 @@ const handlers = {
   },
   reset: () => {
     if (!confirm('Erase all stats and reset your bankroll to $1,000?')) return;
-    state.stats = freshStats(); state.path = {}; state.exam = freshExam(); state.bankroll = 1000; state.bet = 25;
+    state.stats = freshStats(); state.path = {}; state.exam = freshExam(); state.count = freshCount(); state.bankroll = 1000; state.bet = 25;
     save(); renderStats();
   },
 };
@@ -940,21 +1204,9 @@ main.addEventListener('submit', e => {
   e.preventDefault();
   const form = e.target, kind = form.dataset.form;
   if (kind === 'restore') return restoreFrom(new FormData(form).get('code'), true);
-  const val = parseFloat(new FormData(form).values().next().value);
-  if (Number.isNaN(val)) return;
-  if (kind === 'countquiz') { countQuiz.result = { ok: val === game.running }; renderPlay(); }
-  if (kind === 'cdrill') {
-    const answer = cnt.cards.reduce((s, c) => s + hiLo(cardValue(c.r)), 0);
-    cnt.result = { ok: val === answer, given: val, answer };
-    cnt.phase = 'idle';
-    renderCount();
-  }
-  if (kind === 'tcquiz') {
-    const exact = cnt.tc.rc / cnt.tc.decks;
-    cnt.tc.result = { ok: Math.abs(val - exact) <= 0.6 || val === Math.floor(exact) };
-    renderCount();
-  }
 });
+
+main.addEventListener('toggle', e => { if (e.target.matches && e.target.matches('.concept')) cc.open = e.target.open; }, true);
 
 main.addEventListener('input', e => {
   const calc = e.target.closest('[data-calc]');
@@ -965,13 +1217,23 @@ document.addEventListener('keydown', e => {
   if (e.target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey || $('#settings').open) return;
   const k = e.key.toUpperCase();
   const space = e.key === ' ' || e.key === 'Enter';
+  const arrow = e.key === 'ArrowUp' ? 1 : e.key === 'ArrowDown' ? -1 : 0;
   if (state.view === 'play') {
-    if ('HSDPR'.includes(k) && k.length === 1) playAct(k);
+    if (countQuiz && !countQuiz.result && (arrow || e.key === 'Enter')) {
+      e.preventDefault();
+      if (arrow) { countQuiz.entry += arrow; renderPlay(); } else countCheck();
+    } else if ('HSDPR'.includes(k) && k.length === 1) playAct(k);
     else if (k === 'Y' || k === 'N') insurance(k === 'Y');
     else if (space) { e.preventDefault(); deal(); }
   } else if (state.view === 'drill') {
     if ('HSDPR'.includes(k) && k.length === 1) drillAct(k);
     else if (space && drill.answered) { e.preventDefault(); nextDrill(); renderDrill(); }
+  } else if (state.view === 'count' && cc.stage) {
+    const stepping = !cc.ans && (cc.stage === 'table' || (cc.stage === 'running' && cc.flash.phase === 'answer'));
+    if (stepping && arrow) { e.preventDefault(); cc.entry += arrow; renderCount(); }
+    else if (stepping && e.key === 'Enter') { e.preventDefault(); cSubmit(); }
+    else if (space && cc.ans && cc.stage !== 'running') { e.preventDefault(); cNewQuestion(); renderCount(); }
+    else if (cc.stage === 'dev' && !cc.ans && 'HSDPR'.includes(k) && k.length === 1 && cc.q.avail[k]) cAnswer(k);
   }
 });
 
