@@ -5,15 +5,18 @@ A browser game for learning perfect blackjack basic strategy before a Las Vegas 
 ## What is in it
 
 - **Play**: a full table with a real shoe, betting, splits, doubles, surrender and insurance. Every decision is checked against basic strategy. Wrong plays are explained, with the average cost of each option.
-- **Drill**: rapid-fire decisions with no payouts. Hands you miss come back more often.
+- **Train**: three ways to practise without payouts.
+  - *Learning path*: six stages (stiff hands, doubling, soft hands, pairs, three-card hands, everything mixed), each with its rule and a mastery target of 19 of your last 20.
+  - *Free drill*: rapid-fire hands by category or from your weak spots. Hands you miss come back more often.
+  - *Exam*: 50 hands with no feedback until the end, optionally at 6 seconds a hand. 48 is a pass.
 - **Chart**: the strategy chart for your table's rules, with the reasoning behind each cell and an overlay of your own accuracy.
 - **Count**: Hi-Lo running count drill, true count conversion, bet sizing, and the plays that change with the count.
 - **Learn**: lessons on how basic strategy works, choosing a table (3:2 vs 6:5), hand signals and etiquette, bets to skip, bankroll, comps, counting, and the odds of craps, video poker, baccarat and roulette.
-- **Stats**: accuracy, streaks, the cost of your mistakes, and your weakest hands.
+- **Stats**: a readiness checklist, accuracy by day, streaks, the cost of your mistakes, and your weakest hands.
 
 Use the **Rules** button to match the table you plan to play: 4, 6 or 8 decks, dealer hits or stands on soft 17, double after split, late surrender, and 3:2 or 6:5 payouts. Count mode and count-based deviations are optional and off by default.
 
-Progress is saved in your browser. To protect it or move it to another device, use **Stats → Save a restore link**; opening that link restores everything. Keyboard: `H` hit, `S` stand, `D` double, `P` split, `R` surrender, `Space` deal.
+It installs to a phone home screen and works offline. Progress is saved in your browser. To protect it or move it to another device, use **Stats → Save a restore link**; opening that link restores everything. Keyboard: `H` hit, `S` stand, `D` double, `P` split, `R` surrender, `Space` deal.
 
 ## Run it
 

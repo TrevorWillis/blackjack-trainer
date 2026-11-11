@@ -1,6 +1,6 @@
 // Offline support: serve from cache, refresh the cache in the background.
-const CACHE = 'bj-trainer-v1';
-const FILES = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/strategy.js', 'js/game.js', 'js/lessons.js'];
+const CACHE = 'bj-trainer-v2';
+const FILES = ['./', 'index.html', 'css/style.css', 'js/app.js', 'js/strategy.js', 'js/game.js', 'js/lessons.js', 'manifest.json', 'icons/icon-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));

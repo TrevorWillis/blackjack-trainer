@@ -284,3 +284,51 @@ dialog h2 { font-size: 1.2rem; color: var(--gold); margin: 6px 0 8px; }
 .hands.n2 .cards .card + .card { margin-left: -34px; }
 .quiz input.wide { flex: 1; min-width: 140px; width: auto; }
 .linkbox { display: block; width: 100%; margin-top: 8px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: .75rem ui-monospace, monospace; word-break: break-all; resize: none; }
+
+/* Train: path, exam */
+.pills.modes .pill { flex: 1; text-align: center; padding: 10px 8px; }
+.stages { display: grid; gap: 8px; }
+.stage {
+  display: flex; align-items: center; gap: 12px; text-align: left; width: 100%;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px;
+}
+.stage.next { border-color: var(--gold); }
+.stage .num {
+  flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--panel2); font-weight: 700; font-family: Georgia, serif;
+}
+.stage.done .num { background: var(--ok); color: #06301b; }
+.stage .st { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.stage .st small { font-size: .82rem; }
+.stage .state { flex: none; font-size: .85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.stage.next .state, .stage.done .state { color: var(--gold); font-weight: 700; }
+.bar { display: block; height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin-top: 4px; }
+.bar i { display: block; height: 100%; background: var(--gold); border-radius: 3px; }
+.stage.done .bar i { background: var(--ok); }
+.bar.timer { margin: 6px 0 0; }
+.bar.timer i { background: var(--bad); animation: shrink linear forwards; }
+@keyframes shrink { from { width: 100%; } to { width: 0; } }
+.examhead { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+.examhead h3 { margin: 0; }
+.drill > .bar { margin-bottom: 10px; }
+.coach.rule { margin: 0 0 10px; font-size: .93rem; }
+.mastery { display: grid; gap: 2px; font-size: .85rem; color: var(--muted); margin-bottom: 10px; }
+.score { display: flex; align-items: center; gap: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 4px; }
+.score b { font: 700 2.4rem Georgia, serif; white-space: nowrap; }
+.score.pass b { color: var(--ok); } .score.fail b { color: var(--bad); }
+.score b small { font-size: 1.1rem; }
+.drill .score + .lead, .drill .coach.bad + .lead { margin-top: 16px; }
+
+/* Stats */
+h3.first { margin-top: 8px; }
+h3 small { font-family: system-ui, sans-serif; font-size: .75rem; margin-left: 6px; }
+.check { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; }
+.check li { display: flex; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+.check li span { color: var(--muted); font-weight: 700; }
+.check li.done span { color: var(--ok); }
+.days { display: grid; grid-template-columns: repeat(14, 1fr); gap: 4px; height: 130px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 10px 6px; }
+.day { display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; }
+.day .v { font-size: .65rem; height: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+.day .col { flex: 1; width: 100%; max-width: 22px; display: flex; align-items: flex-end; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+.day .col i { display: block; width: 100%; background: var(--gold); border-radius: 4px 4px 0 0; }
+.day .l { font-size: .65rem; color: var(--muted); }

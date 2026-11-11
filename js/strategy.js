@@ -198,7 +198,7 @@ export function actionEVs(info, up, rules, avail) {
 
 /* ---------- Explanations ---------- */
 
-function reason(info, up, action, asPair, rules) {
+function reason(info, up, action, asPair, rules, code) {
   const u = up === 11 ? 'an Ace' : `a ${up}`;
   const weak = up <= 6;
   if (action === 'R') {
@@ -226,6 +226,10 @@ function reason(info, up, action, asPair, rules) {
   }
   if (info.soft) {
     if (action === 'D') return `Soft hands cannot bust with one card, and ${u} is a weak dealer card. Double to get more money out while you have the advantage.`;
+    if (action !== 'D' && (code === 'D' || code === 'Ds')) {
+      const lead = info.n > 2 ? 'With two cards you would double this, but you cannot double after a hit.' : 'You would double this if you could.';
+      return action === 'S' ? `${lead} Soft ${info.total} is good enough to stand.` : `${lead} Hit instead: a soft hand cannot bust.`;
+    }
     if (info.total >= 19) return 'Soft 19 or better is already a strong hand. Stand.';
     if (info.total === 18) {
       return action === 'S' ? 'Soft 18 is ahead of a dealer 2, 7 or 8. Stand.'
@@ -308,7 +312,7 @@ export function advise(values, up, rules, avail, tc = null) {
   const code = asPair ? pairCode(info.pair, up, rules)
     : info.soft ? softCode(info.total, up, rules) : hardCode(info.total, up, rules);
   const basic = resolveCode(code, avail);
-  let action = basic, why = reason(info, up, basic, asPair, rules), dev = null;
+  let action = basic, why = reason(info, up, basic, asPair, rules, code), dev = null;
   if (tc !== null) {
     const d = deviation(info, up, tc, rules, avail, asPair);
     if (d && d.action !== basic) {

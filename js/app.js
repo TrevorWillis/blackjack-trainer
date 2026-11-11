@@ -8,11 +8,14 @@ import { LESSONS } from './lessons.js';
 /* ---------- State ---------- */
 
 const KEY = 'bj-trainer-v1';
-const freshStats = () => ({ cells: {}, hands: 0, decisions: 0, correct: 0, evLost: 0, net: 0, streak: 0, best: 0, rebuys: 0 });
+const freshExam = () => ({ best: 0, last: 0, taken: 0 });
+const freshStats = () => ({ days: {}, cells: {}, hands: 0, decisions: 0, correct: 0, evLost: 0, net: 0, streak: 0, best: 0, rebuys: 0 });
 const state = {
   rules: { ...DEFAULT_RULES },
   opts: { block: true, countMode: 'off', deviations: false },
   stats: freshStats(),
+  path: {},
+  exam: freshExam(),
   bankroll: 1000,
   bet: 25,
   view: 'play',
@@ -23,6 +26,8 @@ try {
     Object.assign(state.rules, saved.rules);
     Object.assign(state.opts, saved.opts);
     Object.assign(state.stats, saved.stats);
+    Object.assign(state.path, saved.path);
+    Object.assign(state.exam, saved.exam);
     for (const k of ['bankroll', 'bet', 'view', 'lastBackup', 'lastBackupN']) if (saved[k] != null) state[k] = saved[k];
   }
 } catch { /* storage unavailable: run without persistence */ }
@@ -30,14 +35,16 @@ function applySaved(saved) {
   Object.assign(state.rules, saved.rules);
   Object.assign(state.opts, saved.opts);
   state.stats = Object.assign(freshStats(), saved.stats);
+  state.path = { ...saved.path };
+  state.exam = Object.assign(freshExam(), saved.exam);
   for (const k of ['bankroll', 'bet']) if (saved[k] != null) state[k] = saved[k];
 }
 
 const b64 = u8 => btoa(Array.from(u8, c => String.fromCharCode(c)).join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const unb64 = str => Uint8Array.from(atob(str.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
 async function pack() {
-  const { rules, opts, stats, bankroll, bet } = state;
-  const raw = new TextEncoder().encode(JSON.stringify({ v: 1, rules, opts, stats, bankroll, bet }));
+  const { rules, opts, stats, path, exam, bankroll, bet } = state;
+  const raw = new TextEncoder().encode(JSON.stringify({ v: 1, rules, opts, stats, path, exam, bankroll, bet }));
   try {
     const z = new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'));
     return 'z' + b64(new Uint8Array(await new Response(z).arrayBuffer()));
@@ -124,6 +131,9 @@ function record(cell, right, cost = 0) {
   const c = s.cells[cell] || (s.cells[cell] = [0, 0]);
   c[right ? 0 : 1]++;
   s.decisions++;
+  const day = new Date().toLocaleDateString('en-CA');
+  const d = s.days[day] || (s.days[day] = [0, 0]);
+  d[right ? 0 : 1]++;
   if (right) { s.correct++; s.streak++; s.best = Math.max(s.best, s.streak); }
   else { s.streak = 0; s.evLost += cost; }
   save();
@@ -295,13 +305,45 @@ function insurance(yes) {
   renderPlay();
 }
 
-/* ---------- Drill ---------- */
+/* ---------- Train: learning path, free drill, exam ---------- */
 
-const drill = { filter: 'all', q: null, answered: null, right: 0, total: 0, streak: 0, timer: null };
+const WINDOW = 20, NEED = 19, EXAM_N = 50, EXAM_PASS = 48, EXAM_SECONDS = 6;
+const drill = { mode: 'path', filter: 'all', stage: null, q: null, answered: null, right: 0, total: 0, streak: 0 };
+const exam = { on: false, timed: false, i: 0, q: null, log: [], timer: null, result: null };
 const SUITS = ['♠', '♥', '♦', '♣'];
 const rankFor = v => (v === 11 ? 'A' : v === 10 ? pick(['10', 'J', 'Q', 'K']) : String(v));
 let drillId = 0;
 const mkCard = v => ({ r: rankFor(v), s: pick(SUITS), id: `d${++drillId}` });
+
+function stages() {
+  const r = state.rules;
+  return [
+    { id: 'stiff', title: 'Stiff hands', sub: 'Hard 12 to 17',
+      rule: `Stand against a dealer 2 to 6 and hit against 7 or higher. The exception: hit 12 against a 2 or 3. Always stand on 17.${r.surrender ? ` Surrender comes first: give up 16 against 9, 10 or Ace, and 15 against 10${r.h17 ? ', plus 15 and 17 against an Ace' : ''}.` : ''}`,
+      match: c => c.type === 'h' && c.k >= 12 && c.k <= 17 },
+    { id: 'double', title: 'Doubling down', sub: 'Hard 11 and under',
+      rule: `Double 11 against ${r.h17 ? 'everything' : 'everything except an Ace'}. Double 10 against 2 to 9. Double 9 against 3 to 6. Otherwise hit, and always hit 8 or less.`,
+      match: c => c.type === 'h' && c.k <= 11 },
+    { id: 'soft', title: 'Soft hands', sub: 'An Ace counted as 11',
+      rule: `Soft 19 and 20 stand${r.h17 ? ' (double soft 19 against a 6)' : ''}. Soft 18: double against ${r.h17 ? '2' : '3'} to 6, stand against ${r.h17 ? '' : '2, '}7 and 8, hit against 9, 10 and Ace. Soft 17 doubles against 3 to 6, soft 15 and 16 against 4 to 6, soft 13 and 14 against 5 and 6. Otherwise hit: a soft hand never stands below 18.`,
+      match: c => c.type === 's' },
+    { id: 'pairs', title: 'Pairs', sub: 'Split or not',
+      rule: `Always split Aces and 8s. Never split 10s or 5s (play 5,5 as a 10). 9s: split against 2 to 9, but stand against 7. 7s: split against 2 to 7. ${r.das ? '6s against 2 to 6. 2s and 3s against 2 to 7. 4s only against 5 and 6.' : '6s against 3 to 6. 2s and 3s against 4 to 7. Never split 4s.'}${r.surrender && r.h17 ? ' Surrender 8,8 against an Ace.' : ''}`,
+      match: c => c.type === 'p' },
+    { id: 'multi', title: 'Three-card hands', sub: 'After you have hit',
+      rule: 'Once you have hit you cannot double, split or surrender. Hands you would have doubled become hits, except soft 18 (and soft 19), which stand. Watch for soft hands hiding in three cards: Ace, 2, 4 is a soft 17, so hit it.',
+      multi: 1, match: c => (c.type === 'h' && c.k >= 9 && c.k <= 17) || (c.type === 's' && c.k >= 14 && c.k <= 19) },
+    { id: 'mixed', title: 'Everything mixed', sub: 'Like a real shoe',
+      rule: `Ask in this order: ${r.surrender ? 'Should I surrender? ' : ''}Should I split? Should I double? Then hit or stand.`,
+      multi: 0.2, match: () => true },
+  ];
+}
+
+function stageProgress(id) {
+  const r = state.path[id] || [];
+  const n = r.reduce((a, b) => a + b, 0);
+  return { n, len: r.length, done: r.length >= WINDOW && n >= NEED };
+}
 
 function drillCells() {
   const cells = [];
@@ -313,12 +355,25 @@ function drillCells() {
   return cells;
 }
 
-function nextDrill() {
-  clearTimeout(drill.timer);
-  const f = drill.filter;
-  let cells = drillCells().filter(c => f === 'all' || f === 'weak' || c.type === f);
+function multiVals(c) {
+  if (c.type === 's') {
+    const n = c.k - 11;
+    if (n < 3) return null;
+    if (n === 3) return [11, 11, 2];
+    const a = 2 + Math.floor(Math.random() * (n - 3));
+    return [11, a, n - a];
+  }
+  for (let i = 0; i < 40; i++) {
+    const a = 2 + Math.floor(Math.random() * 9), b = 2 + Math.floor(Math.random() * 9), d = c.k - a - b;
+    if (d >= 2 && d <= 10) return [a, b, d];
+  }
+  return null;
+}
+
+function makeQuestion(match, multiP = 0, weakOnly = false) {
+  let cells = drillCells().filter(match);
   const stat = c => state.stats.cells[`${c.type}:${c.k}:${c.up}`];
-  if (f === 'weak') {
+  if (weakOnly) {
     const weak = cells.filter(c => stat(c) && stat(c)[1] > 0);
     drill.noWeak = weak.length === 0;
     if (weak.length) cells = weak;
@@ -329,65 +384,191 @@ function nextDrill() {
     return (trivial ? 0.35 : 1) * (1 + (s ? (4 * s[1]) / (s[0] + s[1]) : 0.5));
   });
   let x = Math.random() * weights.reduce((a, b) => a + b, 0), i = 0;
-  while ((x -= weights[i]) > 0) i++;
+  while (i < cells.length - 1 && (x -= weights[i]) > 0) i++;
   const c = cells[i];
-  let vals;
-  if (c.type === 'p') vals = [c.k, c.k];
-  else if (c.type === 's') vals = [11, c.k - 11];
-  else {
-    const opts = [];
-    for (let a = Math.max(2, c.k - 10); a <= Math.min(10, c.k - 2); a++) if (a !== c.k - a) opts.push(a);
-    const a = pick(opts);
-    vals = [a, c.k - a];
+  let vals = c.type !== 'p' && Math.random() < multiP ? multiVals(c) : null;
+  const multi = !!vals;
+  if (!vals) {
+    if (c.type === 'p') vals = [c.k, c.k];
+    else if (c.type === 's') vals = [11, c.k - 11];
+    else {
+      const opts = [];
+      for (let a = Math.max(2, c.k - 10); a <= Math.min(10, c.k - 2); a++) if (a !== c.k - a) opts.push(a);
+      const a = pick(opts);
+      vals = [a, c.k - a];
+    }
   }
   const cards = vals.map(mkCard);
   if (c.type === 'p') cards[1].r = cards[0].r;
-  if (Math.random() < 0.5) cards.reverse();
-  drill.q = { cards, up: mkCard(c.up), upValue: c.up };
+  cards.sort(() => Math.random() - 0.5);
+  return { cards, up: mkCard(c.up), upValue: c.up, multi };
+}
+
+function availFor(q) {
+  if (q.multi) return { H: true, S: true, D: false, P: false, R: false };
+  return { H: true, S: true, D: true, P: handInfo(values(q.cards)).pair !== null, R: state.rules.surrender };
+}
+
+function nextDrill() {
+  if (drill.mode === 'path' && drill.stage) {
+    const st = stages().find(s => s.id === drill.stage);
+    drill.q = makeQuestion(st.match, st.multi || 0);
+  } else {
+    const f = drill.filter;
+    drill.q = makeQuestion(c => f === 'all' || f === 'weak' || c.type === f, f === 'all' ? 0.15 : 0, f === 'weak');
+  }
   drill.answered = null;
 }
 
-function renderDrill() {
-  if (!drill.q) nextDrill();
-  const q = drill.q;
-  const avail = { H: true, S: true, D: true, P: handInfo(values(q.cards)).pair !== null, R: state.rules.surrender };
-  const filters = [['all', 'All hands'], ['h', 'Hard'], ['s', 'Soft'], ['p', 'Pairs'], ['weak', 'My weak spots']]
-    .map(([k, l]) => `<button class="pill${drill.filter === k ? ' on' : ''}" data-act="dfilter" data-v="${k}">${l}</button>`).join('');
-  const a = drill.answered;
-  main.innerHTML = `<section class="drill">
-    <p class="lead">Rapid-fire decisions with no payouts. Hands you miss come back more often.</p>
-    <div class="pills">${filters}</div>
-    ${drill.filter === 'weak' && drill.noWeak ? '<p class="note">No missed hands recorded yet, so this is showing all hands.</p>' : ''}
-    <div class="hud">
-      <div class="stat"><label>This session</label><b>${drill.right}/${drill.total}</b></div>
-      <div class="stat"><label>Accuracy</label><b>${pct(drill.right, drill.total)}</b></div>
-      <div class="stat"><label>Streak</label><b>${drill.streak}</b></div>
-    </div>
-    <div class="felt small">
+function handUI(q, answered, prefix) {
+  return `<div class="felt small">
       <div class="dealer"><div class="who">Dealer shows</div><div class="cards">${cardHTML(q.up)}<div class="card back"></div></div></div>
       <div class="hands"><div class="hand active"><div class="cards">${q.cards.map(cardHTML).join('')}</div>
         <div class="meta"><span class="total">${totalLabel(q.cards)}</span></div></div></div>
     </div>
-    <div class="controls">${a
+    <div class="controls">${answered
       ? '<div class="actions two"><button class="btn primary" data-act="dnext">Next hand<kbd>␣</kbd></button></div>'
-      : `<div class="actions">${actionButtons(avail, 'drill')}</div>`}</div>
-    ${a ? `<div class="coach ${a.kind}">${a.html}</div>` : ''}
-  </section>`;
+      : `<div class="actions">${actionButtons(availFor(q), prefix)}</div>`}</div>
+    ${answered ? `<div class="coach ${answered.kind}">${answered.html}</div>` : ''}`;
+}
+
+function pathHTML() {
+  const list = stages();
+  const firstOpen = list.find(s => !stageProgress(s.id).done);
+  const rows = list.map((s, i) => {
+    const p = stageProgress(s.id);
+    return `<button class="stage${p.done ? ' done' : ''}${firstOpen === s ? ' next' : ''}" data-act="stage" data-v="${s.id}">
+      <span class="num">${p.done ? '✓' : i + 1}</span>
+      <span class="st"><b>${s.title}</b><small>${s.sub}</small><span class="bar"><i style="width:${(100 * p.n) / WINDOW}%"></i></span></span>
+      <span class="state">${p.done ? 'Mastered' : p.len ? `${p.n}/${WINDOW}` : 'Start'}</span></button>`;
+  }).join('');
+  const e = state.exam;
+  return `<p class="lead">Work through the chart one piece at a time. A stage is mastered when you get ${NEED} of your last ${WINDOW} hands right.</p>
+    <div class="stages">${rows}
+      <button class="stage${e.best >= EXAM_PASS ? ' done' : ''}${firstOpen ? '' : ' next'}" data-act="tmode" data-v="exam">
+        <span class="num">${e.best >= EXAM_PASS ? '✓' : '★'}</span>
+        <span class="st"><b>Final exam</b><small>${EXAM_N} hands, no feedback until the end</small></span>
+        <span class="state">${e.taken ? `Best ${e.best}/${EXAM_N}` : 'Take it'}</span></button>
+    </div>`;
+}
+
+function examHTML() {
+  const e = state.exam;
+  if (exam.on) {
+    return `<div class="examhead"><b>Hand ${exam.i + 1} of ${EXAM_N}</b><button class="pill" data-act="examquit">Quit exam</button></div>
+      <div class="bar"><i style="width:${(100 * exam.i) / EXAM_N}%"></i></div>
+      ${exam.timed ? `<div class="bar timer"><i style="animation-duration:${EXAM_SECONDS}s"></i></div>` : ''}
+      ${handUI(exam.q, null, 'exam')}`;
+  }
+  const res = exam.result;
+  let top = '';
+  if (res) {
+    const verdict = res.score === EXAM_N ? 'Perfect. That is table-ready play.'
+      : res.score >= EXAM_PASS ? 'Pass. Clean up the hands below and you are ready.'
+        : 'Not there yet. Drill the hands below and try again.';
+    const misses = res.misses.map(m => `<div class="coach bad"><b>${m.q.cards.map(c => c.r).join(', ')} against ${m.q.up.r}:</b>
+      you ${m.a ? `chose ${ACTION_NAMES[m.a].toLowerCase()}` : 'ran out of time'}, the right play is <b>${ACTION_NAMES[m.adv.action].toLowerCase()}</b>.
+      <div class="why">${m.adv.why}</div></div>`).join('');
+    top = `<div class="score ${res.score >= EXAM_PASS ? 'pass' : 'fail'}"><b>${res.score}<small>/${EXAM_N}</small></b><span>${verdict}</span></div>${misses}`;
+  }
+  return `${top}<p class="lead">${EXAM_N} mixed hands with no corrections until the end, weighted toward the hands you find hardest. ${EXAM_PASS} or better is a pass.${e.taken ? ` Best so far: <b>${e.best}/${EXAM_N}</b> over ${e.taken} attempt${e.taken > 1 ? 's' : ''}.` : ''}</p>
+    <div class="pills">
+      <button class="pill${exam.timed ? '' : ' on'}" data-act="examtimed" data-v="0">No time limit</button>
+      <button class="pill${exam.timed ? ' on' : ''}" data-act="examtimed" data-v="1">Table pace: ${EXAM_SECONDS} seconds a hand</button>
+    </div>
+    <div class="actions two"><button class="btn primary" data-act="examstart">${res ? 'Take it again' : 'Start the exam'}</button></div>`;
+}
+
+function renderDrill() {
+  dealIdx = 0;
+  let body;
+  if (drill.mode === 'exam') body = examHTML();
+  else if (drill.mode === 'path' && !drill.stage) body = pathHTML();
+  else {
+    if (!drill.q) nextDrill();
+    let head;
+    if (drill.mode === 'path') {
+      const st = stages().find(s => s.id === drill.stage), p = stageProgress(st.id);
+      head = `<div class="examhead"><h3>${st.title}</h3><button class="pill" data-act="stageback">← All stages</button></div>
+        <div class="coach info rule">${st.rule}</div>
+        <div class="mastery"><span>${p.done ? '✓ Mastered' : `${p.n} of your last ${WINDOW} right (need ${NEED})`}</span><span class="bar"><i style="width:${(100 * p.n) / WINDOW}%"></i></span></div>`;
+    } else {
+      const filters = [['all', 'All hands'], ['h', 'Hard'], ['s', 'Soft'], ['p', 'Pairs'], ['weak', 'My weak spots']]
+        .map(([k, l]) => `<button class="pill${drill.filter === k ? ' on' : ''}" data-act="dfilter" data-v="${k}">${l}</button>`).join('');
+      head = `<div class="pills">${filters}</div>
+        ${drill.filter === 'weak' && drill.noWeak ? '<p class="note">No missed hands recorded yet, so this is showing all hands.</p>' : ''}
+        <div class="hud">
+          <div class="stat"><label>This session</label><b>${drill.right}/${drill.total}</b></div>
+          <div class="stat"><label>Accuracy</label><b>${pct(drill.right, drill.total)}</b></div>
+          <div class="stat"><label>Streak</label><b>${drill.streak}</b></div>
+        </div>`;
+    }
+    body = head + handUI(drill.q, drill.answered, 'drill');
+  }
+  const modes = exam.on ? '' : `<div class="pills modes">${[['path', 'Learning path'], ['free', 'Free drill'], ['exam', 'Exam']]
+    .map(([k, l]) => `<button class="pill${drill.mode === k ? ' on' : ''}" data-act="tmode" data-v="${k}">${l}</button>`).join('')}</div>`;
+  main.innerHTML = `<section class="drill">${modes}${body}</section>`;
 }
 
 function drillAct(a) {
+  if (drill.mode === 'exam') return examAct(a);
   const q = drill.q;
-  if (!q || drill.answered) return;
-  const vals = values(q.cards);
-  const avail = { H: true, S: true, D: true, P: handInfo(vals).pair !== null, R: state.rules.surrender };
-  if (!avail[a]) return;
-  const adv = advise(vals, q.upValue, state.rules, avail);
+  if (!q || drill.answered || (drill.mode === 'path' && !drill.stage)) return;
+  if (!availFor(q)[a]) return;
+  const adv = advise(values(q.cards), q.upValue, state.rules, availFor(q));
   const right = a === adv.action;
   record(adv.cell, right);
   drill.total++;
   if (right) { drill.right++; drill.streak++; } else drill.streak = 0;
   drill.answered = feedback(adv, a);
+  if (drill.mode === 'path') {
+    const was = stageProgress(drill.stage).done;
+    const r = state.path[drill.stage] || (state.path[drill.stage] = []);
+    r.push(right ? 1 : 0);
+    if (r.length > WINDOW) r.shift();
+    if (!was && stageProgress(drill.stage).done) drill.answered.html += '<div class="retry">Stage mastered. Go back to all stages for the next one.</div>';
+    save();
+  }
   renderDrill();
+}
+
+function examNext() {
+  clearTimeout(exam.timer);
+  if (exam.i >= EXAM_N) {
+    exam.on = false;
+    const score = exam.log.filter(l => l.right).length;
+    exam.result = { score, misses: exam.log.filter(l => !l.right) };
+    const e = state.exam;
+    e.taken++; e.last = score; e.best = Math.max(e.best, score);
+    save();
+  } else {
+    exam.q = makeQuestion(() => true, 0.2);
+    if (exam.timed) exam.timer = setTimeout(() => examAct(null), EXAM_SECONDS * 1000);
+  }
+  renderDrill();
+  window.scrollTo(0, 0);
+}
+
+function examAct(a) {
+  if (!exam.on) return;
+  const q = exam.q, avail = availFor(q);
+  if (a && !avail[a]) return;
+  const adv = advise(values(q.cards), q.upValue, state.rules, avail);
+  const right = a === adv.action;
+  record(adv.cell, right);
+  exam.log.push({ q, a, adv, right });
+  exam.i++;
+  examNext();
+}
+
+function examStart() {
+  Object.assign(exam, { on: true, i: 0, log: [], result: null });
+  examNext();
+}
+
+function examQuit() {
+  clearTimeout(exam.timer);
+  exam.on = false;
 }
 
 /* ---------- Chart ---------- */
@@ -469,6 +650,7 @@ function newTcQuiz() {
 }
 
 function renderCount() {
+  dealIdx = 0;
   if (!cnt.tc) newTcQuiz();
   let stage;
   if (cnt.phase === 'running') {
@@ -576,7 +758,25 @@ function renderStats() {
     }
     return `<tr><td>${cellName(id)}</td><td>${play}</td><td>${c[1]} of ${c[0] + c[1]}</td></tr>`;
   }).join('');
+  const st = stages(), mastered = st.filter(x => stageProgress(x.id).done).length, ex = state.exam;
+  const checks = [
+    [mastered === st.length, `Learning path: ${mastered} of ${st.length} stages mastered`],
+    [ex.best >= EXAM_PASS, ex.taken ? `Exam: best ${ex.best}/${EXAM_N} (pass is ${EXAM_PASS})` : `Exam: not taken yet (pass is ${EXAM_PASS}/${EXAM_N})`],
+    [s.best >= 100, `Best streak: ${s.best} correct in a row (aim for 100)`],
+  ];
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const dt = new Date(); dt.setDate(dt.getDate() - i);
+    const v = s.days[dt.toLocaleDateString('en-CA')];
+    days.push({ label: dt.getDate(), n: v ? v[0] + v[1] : 0, acc: v ? Math.round((100 * v[0]) / (v[0] + v[1])) : 0 });
+  }
+  const dayBars = days.map(d => `<div class="day" title="${d.n} decisions"><span class="v">${d.n ? d.acc : ''}</span><span class="col"><i style="height:${d.n ? Math.max(4, d.acc) : 0}%"></i></span><span class="l">${d.label}</span></div>`).join('');
   main.innerHTML = `<section class="statsview">
+    <h3 class="first">Ready for Vegas?</h3>
+    <ul class="check">${checks.map(([ok, t]) => `<li class="${ok ? 'done' : ''}"><span>${ok ? '✓' : '○'}</span>${t}</li>`).join('')}</ul>
+    <h3>Accuracy by day <small>last 14 days, percent correct</small></h3>
+    <div class="days">${dayBars}</div>
+    <h3>All time</h3>
     <div class="hud wrap">
       <div class="stat"><label>Decisions</label><b>${s.decisions}</b></div>
       <div class="stat"><label>Accuracy</label><b>${pct(s.correct, s.decisions)}</b></div>
@@ -639,7 +839,7 @@ function renderSettings() {
     const changed = JSON.stringify(next.rules) !== JSON.stringify(state.rules);
     state.rules = next.rules;
     state.opts = next.opts;
-    if (changed) { game = new Game(state.rules); coach = null; tried = false; seen.clear(); drill.q = null; chart.sel = null; }
+    if (changed) { game = new Game(state.rules); coach = null; tried = false; seen.clear(); drill.q = null; drill.answered = null; chart.sel = null; examQuit(); }
     save();
     render();
   };
@@ -656,7 +856,7 @@ function render() {
 
 function go(view) {
   stopCount();
-  clearTimeout(drill.timer);
+  if (exam.on) examQuit();
   if (drill.answered) drill.q = null;
   if (view !== 'stats') backupMsg = '';
   state.view = view;
@@ -682,6 +882,13 @@ const handlers = {
   drill: el => drillAct(el.dataset.a),
   dnext: () => { nextDrill(); renderDrill(); },
   dfilter: el => { drill.filter = el.dataset.v; nextDrill(); renderDrill(); },
+  tmode: el => { drill.mode = el.dataset.v; drill.stage = null; drill.q = null; drill.answered = null; renderDrill(); window.scrollTo(0, 0); },
+  stage: el => { drill.stage = el.dataset.v; nextDrill(); renderDrill(); window.scrollTo(0, 0); },
+  stageback: () => { drill.stage = null; drill.q = null; renderDrill(); },
+  exam: el => examAct(el.dataset.a),
+  examstart: examStart,
+  examquit: () => { examQuit(); renderDrill(); },
+  examtimed: el => { exam.timed = el.dataset.v === '1'; renderDrill(); },
   cacc: el => { chart.acc = el.dataset.v === '1'; renderChart(); },
   cell: el => { chart.sel = el.dataset.id; renderChart(); },
   cstart: startCount,
@@ -689,7 +896,7 @@ const handlers = {
   cspeed: el => { cnt.speed = +el.dataset.v; renderCount(); },
   cn: el => { cnt.n = +el.dataset.v; renderCount(); },
   tcnext: () => { newTcQuiz(); renderCount(); },
-  drillweak: () => { drill.filter = 'weak'; drill.q = null; go('drill'); },
+  drillweak: () => { drill.mode = 'free'; drill.stage = null; drill.filter = 'weak'; drill.q = null; go('drill'); },
   backup: async () => {
     const url = await restoreLink();
     let how = '';
@@ -703,7 +910,7 @@ const handlers = {
   },
   reset: () => {
     if (!confirm('Erase all stats and reset your bankroll to $1,000?')) return;
-    state.stats = freshStats(); state.bankroll = 1000; state.bet = 25;
+    state.stats = freshStats(); state.path = {}; state.exam = freshExam(); state.bankroll = 1000; state.bet = 25;
     save(); renderStats();
   },
 };
@@ -719,7 +926,7 @@ async function restoreFrom(code, ask) {
     const theirs = data.stats.decisions || 0, mine = state.stats.decisions;
     if (ask && mine > 0 && !confirm(`Replace the progress on this device (${mine} decisions) with the saved progress (${theirs} decisions)?`)) return;
     applySaved(data);
-    game = new Game(state.rules); coach = null; tried = false; seen.clear(); drill.q = null;
+    game = new Game(state.rules); coach = null; tried = false; seen.clear(); drill.q = null; examQuit(); exam.result = null;
     save();
     backupMsg = `<div class="coach ok">Progress restored: ${theirs} decisions, ${pct(data.stats.correct, theirs)} accuracy.</div>`;
   } catch {
