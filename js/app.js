@@ -23,9 +23,40 @@ try {
     Object.assign(state.rules, saved.rules);
     Object.assign(state.opts, saved.opts);
     Object.assign(state.stats, saved.stats);
-    for (const k of ['bankroll', 'bet', 'view']) if (saved[k] != null) state[k] = saved[k];
+    for (const k of ['bankroll', 'bet', 'view', 'lastBackup', 'lastBackupN']) if (saved[k] != null) state[k] = saved[k];
   }
 } catch { /* storage unavailable: run without persistence */ }
+function applySaved(saved) {
+  Object.assign(state.rules, saved.rules);
+  Object.assign(state.opts, saved.opts);
+  state.stats = Object.assign(freshStats(), saved.stats);
+  for (const k of ['bankroll', 'bet']) if (saved[k] != null) state[k] = saved[k];
+}
+
+const b64 = u8 => btoa(Array.from(u8, c => String.fromCharCode(c)).join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64 = str => Uint8Array.from(atob(str.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+async function pack() {
+  const { rules, opts, stats, bankroll, bet } = state;
+  const raw = new TextEncoder().encode(JSON.stringify({ v: 1, rules, opts, stats, bankroll, bet }));
+  try {
+    const z = new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    return 'z' + b64(new Uint8Array(await new Response(z).arrayBuffer()));
+  } catch { return 'j' + b64(raw); }
+}
+async function unpack(code) {
+  code = code.trim().replace(/^.*#save=/, '');
+  let bytes = unb64(code.slice(1));
+  if (code[0] === 'z') {
+    const z = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    bytes = new Uint8Array(await new Response(z).arrayBuffer());
+  } else if (code[0] !== 'j') throw new Error('bad code');
+  const data = JSON.parse(new TextDecoder().decode(bytes));
+  if (!data || data.v !== 1 || !data.stats) throw new Error('bad code');
+  return data;
+}
+const restoreLink = async () => `${location.origin}${location.pathname}#save=${await pack()}`;
+let backupMsg = '';
+
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* ignore */ } };
 
 const $ = s => document.querySelector(s);
@@ -136,8 +167,9 @@ function renderPlay() {
     const cards = h.cards.map(cardHTML).join('');
     const active = g.phase === 'player' && i === g.cur;
     const res = h.result ? `<span class="result r-${h.result.toLowerCase()} fade" style="animation-delay:${dealIdx * 130}ms">${h.result}${h.net ? ' ' + money(h.net).replace('$', h.net > 0 ? '+$' : '$') : ''}</span>` : '';
+    const label = g.hands.length > 1 ? `<div class="hlabel">Hand ${i + 1}${active ? ' · your turn' : ''}</div>` : '';
     return `<div class="hand${active ? ' active' : ''}">
-      <div class="cards">${cards}</div>
+      ${label}<div class="cards">${cards}</div>
       <div class="meta"><span class="total">${totalLabel(h.cards)}</span><span class="chip">${money(h.bet)}</span>${res}</div>
     </div>`;
   }).join('') : '<div class="placeholder">Place your bet and deal</div>';
@@ -237,7 +269,11 @@ function playAct(a) {
     return renderPlay();
   }
   tried = false;
+  const wasCur = game.cur, splitAces = a === 'P' && cardValue(hand.cards[0].r) === 11;
   game.act(a);
+  if (splitAces) coach.html += '<div class="retry">Split aces get one card each in Vegas, so both hands are finished.</div>';
+  else if (a === 'P' && game.phase === 'player') coach.html += `<div class="retry">Now play hand ${game.cur + 1}. The next hand gets its second card when you reach it.</div>`;
+  else if (game.phase === 'player' && game.cur !== wasCur) coach.html += `<div class="retry">Now play hand ${game.cur + 1}.</div>`;
   finishIfDone();
   renderPlay();
 }
@@ -332,9 +368,9 @@ function renderDrill() {
       <div class="hands"><div class="hand active"><div class="cards">${q.cards.map(cardHTML).join('')}</div>
         <div class="meta"><span class="total">${totalLabel(q.cards)}</span></div></div></div>
     </div>
-    <div class="controls">${a && a.kind === 'bad'
+    <div class="controls">${a
       ? '<div class="actions two"><button class="btn primary" data-act="dnext">Next hand<kbd>␣</kbd></button></div>'
-      : `<div class="actions">${actionButtons(a ? {} : avail, 'drill')}</div>`}</div>
+      : `<div class="actions">${actionButtons(avail, 'drill')}</div>`}</div>
     ${a ? `<div class="coach ${a.kind}">${a.html}</div>` : ''}
   </section>`;
 }
@@ -352,7 +388,6 @@ function drillAct(a) {
   if (right) { drill.right++; drill.streak++; } else drill.streak = 0;
   drill.answered = feedback(adv, a);
   renderDrill();
-  if (right) drill.timer = setTimeout(() => { if (state.view === 'drill') { nextDrill(); renderDrill(); } }, 900);
 }
 
 /* ---------- Chart ---------- */
@@ -555,6 +590,11 @@ function renderStats() {
     ${rows ? `<table class="info"><tr><th>Hand</th><th>Right play</th><th>Missed</th></tr>${rows}</table>
       <div class="actions two"><button class="btn primary" data-act="drillweak">Drill my weak spots</button></div>`
       : '<p class="note">No mistakes recorded yet. Play some hands or run the drill.</p>'}
+    <h3>Keep your progress</h3>
+    <p class="note">Progress is stored in this browser on this device. There is no account, so clearing site data or switching phones would lose it. A restore link carries everything: save it somewhere safe (notes, or email it to yourself) and open it on any device to pick up where you left off.${state.lastBackup ? ` Last saved ${new Date(state.lastBackup).toLocaleDateString()}, at ${state.lastBackupN ?? 0} decisions.` : ''}</p>
+    <div class="actions two"><button class="btn primary" data-act="backup">Save a restore link</button></div>
+    ${backupMsg}
+    <form class="coach info quiz" data-form="restore">Restore: <input class="wide" name="code" type="text" placeholder="Paste a restore link" required autocomplete="off"><button class="btn small">Restore</button></form>
     <div class="actions two"><button class="btn ghost" data-act="reset">Reset all progress</button></div>
   </section>`;
 }
@@ -618,6 +658,7 @@ function go(view) {
   stopCount();
   clearTimeout(drill.timer);
   if (drill.answered) drill.q = null;
+  if (view !== 'stats') backupMsg = '';
   state.view = view;
   save();
   render();
@@ -649,6 +690,17 @@ const handlers = {
   cn: el => { cnt.n = +el.dataset.v; renderCount(); },
   tcnext: () => { newTcQuiz(); renderCount(); },
   drillweak: () => { drill.filter = 'weak'; drill.q = null; go('drill'); },
+  backup: async () => {
+    const url = await restoreLink();
+    let how = '';
+    try {
+      if (navigator.share && matchMedia('(hover: none)').matches) { await navigator.share({ title: 'Blackjack trainer progress', url }); how = 'Shared.'; }
+      else { await navigator.clipboard.writeText(url); how = 'Copied to the clipboard.'; }
+    } catch { how = 'Copy the link below.'; }
+    state.lastBackup = Date.now(); state.lastBackupN = state.stats.decisions; save();
+    backupMsg = `<div class="coach ok">${how} Opening this link restores your progress as of now.<textarea class="linkbox" readonly rows="3">${url}</textarea></div>`;
+    renderStats();
+  },
   reset: () => {
     if (!confirm('Erase all stats and reset your bankroll to $1,000?')) return;
     state.stats = freshStats(); state.bankroll = 1000; state.bet = 25;
@@ -661,9 +713,26 @@ main.addEventListener('click', e => {
   if (el && !el.disabled && handlers[el.dataset.act]) handlers[el.dataset.act](el);
 });
 
+async function restoreFrom(code, ask) {
+  try {
+    const data = await unpack(code);
+    const theirs = data.stats.decisions || 0, mine = state.stats.decisions;
+    if (ask && mine > 0 && !confirm(`Replace the progress on this device (${mine} decisions) with the saved progress (${theirs} decisions)?`)) return;
+    applySaved(data);
+    game = new Game(state.rules); coach = null; tried = false; seen.clear(); drill.q = null;
+    save();
+    backupMsg = `<div class="coach ok">Progress restored: ${theirs} decisions, ${pct(data.stats.correct, theirs)} accuracy.</div>`;
+  } catch {
+    backupMsg = '<div class="coach bad">That restore link could not be read. Check that you pasted all of it.</div>';
+  }
+  state.view = 'stats';
+  render();
+}
+
 main.addEventListener('submit', e => {
   e.preventDefault();
   const form = e.target, kind = form.dataset.form;
+  if (kind === 'restore') return restoreFrom(new FormData(form).get('code'), true);
   const val = parseFloat(new FormData(form).values().next().value);
   if (Number.isNaN(val)) return;
   if (kind === 'countquiz') { countQuiz.result = { ok: val === game.running }; renderPlay(); }
@@ -703,4 +772,11 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
+if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+
 render();
+if (location.hash.startsWith('#save=')) {
+  const code = location.hash;
+  history.replaceState(null, '', location.pathname);
+  restoreFrom(code, true);
+}

@@ -13,7 +13,7 @@ A browser game for learning perfect blackjack basic strategy before a Las Vegas 
 
 Use the **Rules** button to match the table you plan to play: 4, 6 or 8 decks, dealer hits or stands on soft 17, double after split, late surrender, and 3:2 or 6:5 payouts. Count mode and count-based deviations are optional and off by default.
 
-Progress is saved in your browser. Keyboard: `H` hit, `S` stand, `D` double, `P` split, `R` surrender, `Space` deal.
+Progress is saved in your browser. To protect it or move it to another device, use **Stats → Save a restore link**; opening that link restores everything. Keyboard: `H` hit, `S` stand, `D` double, `P` split, `R` surrender, `Space` deal.
 
 ## Run it
 

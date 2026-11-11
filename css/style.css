@@ -275,3 +275,12 @@ dialog h2 { font-size: 1.2rem; color: var(--gold); margin: 6px 0 8px; }
   .top h1 { font-size: 1rem; }
   .tabs button { font-size: .82rem; }
 }
+
+/* Split hands and backup */
+.hlabel { text-align: center; font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: rgba(255, 255, 255, .7); margin-bottom: 6px; white-space: nowrap; }
+.hand.active .hlabel { color: var(--gold); font-weight: 700; }
+.hands.n2 { flex-wrap: nowrap; gap: 6px; }
+.hands.n2 .hand, .hands.n3 .hand, .hands.n4 .hand { padding: 6px 4px; min-width: 0; }
+.hands.n2 .cards .card + .card { margin-left: -34px; }
+.quiz input.wide { flex: 1; min-width: 140px; width: auto; }
+.linkbox { display: block; width: 100%; margin-top: 8px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: .75rem ui-monospace, monospace; word-break: break-all; resize: none; }
